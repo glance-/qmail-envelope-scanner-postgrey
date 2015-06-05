@@ -1,0 +1,78 @@
+This is a greylisting patch for qmail that i (Anton Lundin, glance@acc.umu.se)
+have put togeader by taking some code from patches that is prox the same and 
+combined them to a single one i like.
+
+this is made to work whith the qmail-envelope-scanner-postgrey and
+qmail-envelope-scanner-mysql.
+
+
+
+diff -ur netqmail-1.05.toaster-0.8.1+greylist+customreject/qmail-smtpd.c netqmail-1.05.toaster-0.8.1+greylist-mysql+customreject/qmail-smtpd.c
+--- netqmail-1.05.toaster-0.8.1+greylist+customreject/qmail-smtpd.c	2006-01-12 22:20:08.000000000 +0100
++++ ./qmail-smtpd.c	2006-01-12 22:53:53.000000000 +0100
+@@ -30,6 +30,8 @@
+ #include "env.h"
+ #include "now.h"
+ #include "exit.h"
++#include "fork.h"
++#include "wait.h"
+ #include "rcpthosts.h"
+ #include "timeoutread.h"
+ #include "timeoutwrite.h"
+@@ -94,6 +96,8 @@
+ void die_ipme() { out("421 unable to figure out my IP addresses (#4.3.0)\r\n"); flush(); _exit(1); }
+ void straynewline() { out("451 See http://pobox.com/~djb/docs/smtplf.html.\r\n"); flush(); _exit(1); }
+ 
++void err_tempfail() { out("450 temporary envelope failure (#4.3.0)\r\n"); }
++void err_permfail() { out("550 sorry, permanent envelope failure (#5.7.1)\r\n"); }
+ void err_size() { out("552 sorry, that message size exceeds my databytes limit (#5.3.4)\r\n"); }
+ void err_bmf() { out("553 sorry, your envelope sender has been denied (#5.7.1)\r\n"); }
+ void err_bmt() { out("553 sorry, your envelope recipient has been denied (#5.7.1)\r\n"); }
+@@ -461,6 +465,37 @@
+     }
+ }
+ 
++int envelope_scanner()
++{
++  int child;
++  int wstat;
++  char *envelope_scannerarg[] = { env_get("ENVELOPE_SCANNER") , mailfrom.s, addr.s, 0 };
++
++  switch(child = vfork()) {
++    case -1:
++      return 1;
++    case 0:
++      execv(*envelope_scannerarg,envelope_scannerarg);
++      _exit(111);
++  }
++
++  wait_pid(&wstat,child);
++  if (wait_crashed(wstat)) {
++    return 1;
++  }
++
++  switch(wait_exitcode(wstat)) {
++    case 101:
++      err_tempfail();
++      return 0;
++    case 100:
++      err_permfail();
++      return 0;
++    default:
++      return 1;
++  }
++}
++
+ void smtp_helo(arg) char *arg;
+ {
+   smtp_greet("250 "); out("\r\n");
+@@ -608,6 +643,9 @@
+     if (!stralloc_0(&addr)) die_nomem();
+                 break;
+   }
++  if (!relayclient) {
++    if (env_get("ENVELOPE_SCANNER") && !envelope_scanner()) return;
++  }
+   if (!stralloc_cats(&rcptto,"T")) die_nomem();
+   if (!stralloc_cats(&rcptto,addr.s)) die_nomem();
+   if (!stralloc_0(&rcptto)) die_nomem();
